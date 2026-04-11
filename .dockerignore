@@ -1,0 +1,8 @@
+.git
+.gitignore
+.DS_Store
+.Rhistory
+.RData
+.Ruserdata
+docs/
+*.log

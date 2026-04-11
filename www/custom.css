@@ -1,0 +1,175 @@
+/* Collapsible Map Control Styling */
+.map-layer-control {
+  background-color: white;
+  border-radius: 4px;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+  padding: 5px;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  transition: width 0.3s ease, height 0.3s ease;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-layer-control.expanded {
+  width: 200px;
+  height: auto;
+  padding: 10px;
+}
+
+.control-icon {
+  width: 26px;
+  height: 26px;
+  text-align: center;
+  margin-bottom: 5px;
+  font-size: 18px;
+  color: #333;
+  flex-shrink: 0;
+}
+
+.control-content {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  margin-top: 5px;
+  white-space: nowrap;
+}
+
+.map-layer-control.expanded .control-content {
+  opacity: 1;
+  white-space: normal;
+}
+
+.map-layer-control.expanded .control-icon {
+  display: none !important;
+}
+
+.map-layer-control .control-content label {
+  font-size: 85%;
+}
+
+#zoom_home_panel {
+  z-index: 999 !important;
+}
+
+.btn-home {
+  background: white;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  color: #444;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-home:hover {
+  background: #f4f4f4;
+  color: #000;
+}
+
+@media (max-width: 768px) {
+  /* Hide MapLibre navigation control (zoom +/-) on mobile */
+  .maplibregl-ctrl-top-left .maplibregl-ctrl-group,
+  .mapboxgl-ctrl-top-left .mapboxgl-ctrl-group {
+    display: none !important;
+  }
+
+  /* Hide layer control panel on mobile */
+  .map-layer-control {
+    display: none !important;
+  }
+}
+
+/* Data Info Box Styling */
+.data-info-box {
+  background-color: #f8f9fa;
+  border-left: 4px solid #007bff;
+  padding: 12px;
+  border-radius: 0 6px 6px 0;
+  margin: 15px 0;
+  font-size: 0.9rem;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.data-info-title {
+  font-weight: 700;
+  color: #495057;
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.data-info-item {
+  color: #6c757d;
+  margin-bottom: 2px;
+}
+
+.fw-bold {
+  color: #343a40;
+}
+
+
+/* Frozen overlay - blocks all interactions during data loading */
+.frozen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+  display: none;
+  cursor: wait;
+}
+
+.frozen-overlay.active {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-end !important;
+  padding: 80px 30px 30px 30px !important;
+}
+
+.frozen-overlay-content {
+  position: relative;
+  background: white;
+  width: 400px;
+  min-height: 200px;
+  padding: 30px;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.frozen-overlay-content .spinner-border {
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: 15px;
+}
+
+.frozen-overlay-content p {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+/* Disable pointer events when frozen */
+body.ui-frozen .bslib-sidebar-layout,
+body.ui-frozen .bslib-page-navbar,
+body.ui-frozen .maplibregl-map, 
+body.ui-frozen .map-layer-control,
+body.ui-frozen #zoom_home_panel {
+  pointer-events: none !important;
+}
+
+body.ui-frozen .bslib-sidebar-layout > .sidebar {
+  opacity: 0.6;
+}

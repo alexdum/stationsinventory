@@ -1,0 +1,13 @@
+# docker-compose.yml
+# Configuration for live development and container management
+
+services:
+  app:
+    build: .
+    image: stationinventory-app:latest
+    container_name: stationinventory-dev
+    ports:
+      - "3838:3838"
+    volumes:
+      - .:/srv/shiny-server/
+    restart: always
