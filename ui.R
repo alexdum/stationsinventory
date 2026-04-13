@@ -105,7 +105,7 @@ ui <- page_navbar(
     )
   ),
   nav_panel(
-    "Station Table",
+    "Station List",
     div(
       style = "padding: 16px;",
       uiOutput("dynamic_title_table"),
