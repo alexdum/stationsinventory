@@ -140,10 +140,14 @@ function(input, output, session) {
     "road-label", "waterway-label", "natural-point-label", "poi-label", "airport-label"
   )
 
+  country_border_layer_ids <- c(
+    "boundary_3", "boundary_2", "boundary_disputed"
+  )
+
   resolve_station_before_id <- local({
     style_before_id_cache <- new.env(parent = emptyenv())
 
-    function(style_url, fallback_id = "waterway_line_label") {
+    function(style_url, fallback_id = "boundary_3") {
       if (is.null(style_url) || identical(style_url, "")) {
         return(fallback_id)
       }
@@ -172,7 +176,8 @@ function(input, output, session) {
           function(layer) layer$id %||% NA_character_,
           character(1)
         )
-        matching_ids <- layer_ids[layer_ids %in% label_layer_ids]
+        overlay_layer_ids <- c(country_border_layer_ids, label_layer_ids)
+        matching_ids <- layer_ids[layer_ids %in% overlay_layer_ids]
 
         if (length(matching_ids) > 0) {
           before_id <- matching_ids[[1]]
@@ -188,10 +193,10 @@ function(input, output, session) {
 
   get_station_before_id_for_basemap <- function(basemap) {
     if (identical(basemap, "ofm_bright")) {
-      return(resolve_station_before_id(ofm_bright_style, fallback_id = "road_oneway"))
+      return(resolve_station_before_id(ofm_bright_style, fallback_id = "boundary_3"))
     }
 
-    resolve_station_before_id(ofm_positron_style, fallback_id = "waterway_line_label")
+    resolve_station_before_id(ofm_positron_style, fallback_id = "boundary_3")
   }
 
   stations_before_id(get_station_before_id_for_basemap("ofm_positron"))
@@ -206,8 +211,7 @@ function(input, output, session) {
     "highway_motorway_casing", "highway_motorway_inner", "highway_motorway_subtle",
     "railway_transit", "railway_transit_dashline", "railway_service",
     "railway_service_dashline", "railway", "railway_dashline",
-    "highway_motorway_bridge_casing", "highway_motorway_bridge_inner",
-    "boundary_3", "boundary_2", "boundary_disputed"
+    "highway_motorway_bridge_casing", "highway_motorway_bridge_inner"
   )
 
   apply_label_visibility <- function(proxy, show_labels) {
