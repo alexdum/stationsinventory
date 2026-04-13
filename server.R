@@ -140,6 +140,62 @@ function(input, output, session) {
     "road-label", "waterway-label", "natural-point-label", "poi-label", "airport-label"
   )
 
+  resolve_station_before_id <- local({
+    style_before_id_cache <- new.env(parent = emptyenv())
+
+    function(style_url, fallback_id = "waterway_line_label") {
+      if (is.null(style_url) || identical(style_url, "")) {
+        return(fallback_id)
+      }
+
+      if (exists(style_url, envir = style_before_id_cache, inherits = FALSE)) {
+        return(get(style_url, envir = style_before_id_cache, inherits = FALSE))
+      }
+
+      before_id <- fallback_id
+
+      tryCatch({
+        response <- httr::GET(
+          style_url,
+          httr::user_agent("stationinventory/1.0"),
+          httr::timeout(3)
+        )
+        httr::stop_for_status(response)
+
+        style_spec <- jsonlite::fromJSON(
+          httr::content(response, as = "text", encoding = "UTF-8"),
+          simplifyVector = FALSE
+        )
+
+        layer_ids <- vapply(
+          style_spec$layers %||% list(),
+          function(layer) layer$id %||% NA_character_,
+          character(1)
+        )
+        matching_ids <- layer_ids[layer_ids %in% label_layer_ids]
+
+        if (length(matching_ids) > 0) {
+          before_id <- matching_ids[[1]]
+        }
+      }, error = function(e) {
+        message("Style inspection failed for station layer ordering: ", e$message)
+      })
+
+      assign(style_url, before_id, envir = style_before_id_cache)
+      before_id
+    }
+  })
+
+  get_station_before_id_for_basemap <- function(basemap) {
+    if (identical(basemap, "ofm_bright")) {
+      return(resolve_station_before_id(ofm_bright_style, fallback_id = "road_oneway"))
+    }
+
+    resolve_station_before_id(ofm_positron_style, fallback_id = "waterway_line_label")
+  }
+
+  stations_before_id(get_station_before_id_for_basemap("ofm_positron"))
+
   non_label_layer_ids <- c(
     "background", "park", "water", "landcover_ice_shelf", "landcover_glacier",
     "landuse_residential", "landcover_wood", "waterway", "building",
@@ -173,7 +229,7 @@ function(input, output, session) {
     if (basemap %in% c("ofm_positron", "ofm_bright")) {
       style_url <- if (basemap == "ofm_positron") ofm_positron_style else ofm_bright_style
       proxy %>% set_style(style_url, preserve_layers = FALSE)
-      stations_before_id("waterway_line_label")
+      stations_before_id(get_station_before_id_for_basemap(basemap))
       current_session <- shiny::getDefaultReactiveDomain()
       selected_basemap <- basemap
       later::later(function() {
@@ -202,7 +258,7 @@ function(input, output, session) {
             tryCatch({ maplibre_proxy("map") %>% set_layout_property(lid, "visibility", "none") }, error = function(e) {})
           }
           apply_label_visibility(maplibre_proxy("map"), isolate(input$show_labels))
-          stations_before_id("waterway_line_label")
+          stations_before_id(get_station_before_id_for_basemap(basemap))
           style_change_trigger(isolate(style_change_trigger()) + 1)
         })
       }, delay = 0.5)
