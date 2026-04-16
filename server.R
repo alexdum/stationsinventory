@@ -2,6 +2,60 @@
 # Server logic with MapLibre and basemap switching
 function(input, output, session) {
 
+  # Serve PMTiles via a custom HTTP route to support Range requests
+  if (stations_render_mode == "pmtiles") {
+    stations_pmtiles_url <<- session$registerDataObj(
+      name   = "stations_pmtiles",
+      data   = "www/stations.pmtiles",
+      filterFunc = function(data, req) {
+        filepath <- data
+        if (!file.exists(filepath)) return(NULL)
+        size <- file.info(filepath)$size
+        range_header <- req$HTTP_RANGE
+
+        if (is.null(range_header)) {
+          return(list(
+            status = 200L,
+            headers = list(
+              "Content-Type" = "application/octet-stream",
+              "Content-Length" = as.character(size),
+              "Accept-Ranges" = "bytes"
+            ),
+            body = filepath
+          ))
+        }
+
+        r <- regmatches(range_header, regexec("bytes=([0-9]+)-([0-9]*)", range_header))[[1]]
+        if (length(r) == 0) {
+          return(list(status = 416L, headers = list("Content-Range" = paste0("bytes */", size)), body = ""))
+        }
+
+        start <- as.numeric(r[2])
+        end <- if (r[3] != "") as.numeric(r[3]) else (size - 1)
+
+        if (end >= size) end <- size - 1
+        if (start < 0) start <- 0
+        len <- end - start + 1
+
+        con <- file(filepath, "rb")
+        seek(con, start)
+        bytes <- readBin(con, "raw", n = len)
+        close(con)
+
+        return(list(
+          status = 206L,
+          headers = list(
+            "Content-Type" = "application/octet-stream",
+            "Content-Length" = as.character(len),
+            "Content-Range" = paste0("bytes ", start, "-", end, "/", size),
+            "Accept-Ranges" = "bytes"
+          ),
+          body = bytes
+        ))
+      }
+    )
+  }
+
   ofm_positron_style <- "https://tiles.openfreemap.org/styles/positron"
   ofm_bright_style <- "https://tiles.openfreemap.org/styles/bright"
   sentinel_url <- "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -101,7 +155,7 @@ function(input, output, session) {
 
   initial_lng <- 0
   initial_lat <- 38
-  initial_zoom <- 2
+  initial_zoom <- 3
 
   output$map <- renderMaplibre({
     print("Initializing MapLibre...")
@@ -229,6 +283,8 @@ function(input, output, session) {
     basemap <- basemap_debounced()
     proxy <- maplibre_proxy("map")
     session$sendCustomMessage("show-map-overlay", list())
+    # Style switch destroys all layers; mark PMTiles layer as needing re-add
+    pmtiles_layer_added(FALSE)
 
     if (basemap %in% c("ofm_positron", "ofm_bright")) {
       style_url <- if (basemap == "ofm_positron") ofm_positron_style else ofm_bright_style
@@ -348,6 +404,155 @@ function(input, output, session) {
       clear_layer("stations_layer")
   }
 
+  # Track whether the PMTiles layer has been added to the map
+  pmtiles_layer_added <- reactiveVal(FALSE)
+
+  # Build a MapLibre filter expression from the current UI filter inputs.
+  # Returns a list structure that mapgl::set_filter() serializes to JSON.
+  # Uses integer 0/1 because tippecanoe converts booleans to integers.
+  build_filter_expression <- function() {
+    # Use isolate() because this helper may be called from non-reactive
+    # contexts (e.g. onFlushed). Reactive dependency tracking is handled
+    # by the calling observeEvent, not by this function.
+    isolate({
+      conditions <- list()
+
+      # Country filter
+      country_val <- input$country_filter
+      if (!is.null(country_val) && country_val != "All") {
+        conditions <- c(conditions, list(list("==", list("get", "country"), country_val)))
+      }
+
+      # Station search filter
+      search_term <- station_search_debounced()
+      if (!is.null(search_term) && nchar(trimws(search_term)) > 0) {
+        conditions <- c(conditions, list(list("==", list("get", "station_name"), trimws(search_term))))
+      }
+
+      # Year range filter — stations whose records overlap [sel_start, sel_end]
+      # Equivalent to: (start_year IS NULL OR start_year <= sel_end) AND (end_year IS NULL OR end_year >= sel_start)
+      sel_start <- input$year_range[1]
+      sel_end   <- input$year_range[2]
+      if (!is.null(sel_start) && !is.null(sel_end)) {
+        default_yr <- current_default_year_range()
+        if (sel_start != default_yr[1] || sel_end != default_yr[2]) {
+          conditions <- c(conditions, list(
+            list("any",
+              list("!", list("has", "start_year")),
+              list("<=", list("get", "start_year"), sel_end)
+            )
+          ))
+          conditions <- c(conditions, list(
+            list("any",
+              list("!", list("has", "end_year")),
+              list(">=", list("get", "end_year"), sel_start)
+            )
+          ))
+        }
+      }
+
+      # Variable filter — keep features that have at least one selected variable (OR logic)
+      # The has_* fields are stored as 0/1 integers in the PMTiles
+      var_filter <- input$var_filter
+      if (!is.null(var_filter) && length(var_filter) > 0 && length(var_filter) < length(var_choices)) {
+        var_conditions <- list()
+        var_col_map <- c(
+          "t" = "has_t", "pp" = "has_pp", "sd" = "has_sd",
+          "ws" = "has_ws", "wd" = "has_wd", "slp" = "has_slp",
+          "dpt" = "has_dpt", "wbt" = "has_wbt", "rh" = "has_rh",
+          "sc" = "has_sc", "snow" = "has_snow", "cc" = "has_cc",
+          "sp" = "has_sp"
+        )
+        for (v in var_filter) {
+          col_name <- var_col_map[[v]]
+          if (!is.null(col_name)) {
+            var_conditions <- c(var_conditions, list(list("==", list("get", col_name), 1L)))
+          }
+        }
+        # Also keep stations with observed_variables == "Unknown"
+        var_conditions <- c(var_conditions, list(list("==", list("get", "observed_variables"), "Unknown")))
+
+        if (length(var_conditions) > 0) {
+          conditions <- c(conditions, list(do.call(c, list(list("any"), var_conditions))))
+        }
+      }
+
+      if (length(conditions) == 0) {
+        return(NULL)  # No filter — show all
+      } else if (length(conditions) == 1) {
+        return(conditions[[1]])
+      } else {
+        return(do.call(c, list(list("all"), conditions)))
+      }
+    })
+  }
+
+  # Apply the current filter expression to the PMTiles layer via set_filter()
+  apply_pmtiles_filter <- function() {
+    filter_expr <- tryCatch(
+      build_filter_expression(),
+      error = function(e) NULL  # shiny.silent.error when inputs not ready; NULL = show all
+    )
+    proxy <- maplibre_proxy("map")
+    tryCatch(
+      proxy %>% set_filter("stations_layer_tiled", filter_expr),
+      error = function(e) message("set_filter failed: ", conditionMessage(e))
+    )
+  }
+
+  # Add the PMTiles source + circle layer to the map (done once)
+  add_pmtiles_layer <- function() {
+    proxy <- clear_station_layers(maplibre_proxy("map"))
+
+    if (stations_render_mode == "pmtiles") {
+      proxy <- tryCatch(
+        proxy %>%
+          add_pmtiles_source(
+            id = "stations_tiled_source",
+            url = stations_pmtiles_url,
+            source_type = "vector"
+          ),
+        error = function(e) { message("add_pmtiles_source error: ", e$message); proxy }
+      )
+    } else {
+      proxy <- tryCatch(
+        proxy %>%
+          add_vector_source(
+            id = "stations_tiled_source",
+            tiles = stations_mvt_tiles
+          ),
+        error = function(e) { message("add_vector_source error: ", e$message); proxy }
+      )
+    }
+
+    proxy %>%
+      add_circle_layer(
+        id = "stations_layer_tiled",
+        source = "stations_tiled_source",
+        source_layer = stations_tiles_source_layer,
+        circle_color = "#3498db",
+        circle_radius = interpolate(
+          property = "zoom",
+          values = c(2, 6, 10),
+          stops = c(2.5, 4.5, 8)
+        ),
+        circle_opacity = 0.8,
+        circle_stroke_width = 1.5,
+        circle_stroke_color = "#3498db",
+        tooltip = concat(
+          "<b>", get_column("station_name"), "</b><br>",
+          "Country: ", get_column("country"), " | Continent: ", get_column("continent"), "<br>",
+          "Elevation: ", get_column("elevation"), " m<br>",
+          "Period: ", get_column("start_year"), " - ", get_column("end_year"), "<br>",
+          "Variables: ", get_column("observed_variables")
+        ),
+        before_id = isolate(stations_before_id())
+      )
+
+    pmtiles_layer_added(TRUE)
+    session$sendCustomMessage("hide-map-overlay", list())
+  }
+
   observeEvent(input$country_filter, {
     # Reset station search when country changes
     update_station_choices(country = input$country_filter)
@@ -394,58 +599,27 @@ function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  # Helper: render stations onto the map (used both in onFlushed and reactive observe)
-  render_stations_to_map <- function(data) {
-    all_filters_default <- isTRUE(tryCatch(all_stations_selected(), error = function(e) FALSE))
-    same_size_as_full_inventory <- nrow(data) == nrow(isolate(inventory_data_rv()))
-    use_tiled_points <- stations_render_mode %in% c("pmtiles", "mvt") &&
-      (all_filters_default || same_size_as_full_inventory)
-    proxy <- clear_station_layers(maplibre_proxy("map"))
+  # Helper: render stations onto the map
+  # In PMTiles mode: adds the layer once, then uses set_filter() for updates.
+  # In GeoJSON mode: clears and re-adds the layer with filtered data.
+  render_stations_to_map <- function(data, force_geojson = FALSE) {
+    use_tiled <- stations_render_mode %in% c("pmtiles", "mvt") && !force_geojson
 
-    if (use_tiled_points) {
-      if (stations_render_mode == "pmtiles") {
-        proxy <- tryCatch(
-          proxy %>%
-            add_pmtiles_source(
-              id = "stations_tiled_source",
-              url = stations_pmtiles_url,
-              source_type = "vector"
-            ),
-          error = function(e) proxy
-        )
-      } else {
-        proxy <- tryCatch(
-          proxy %>%
-            add_vector_source(
-              id = "stations_tiled_source",
-              tiles = stations_mvt_tiles
-            ),
-          error = function(e) proxy
-        )
+    if (use_tiled) {
+      if (!isTRUE(isolate(pmtiles_layer_added()))) {
+        add_pmtiles_layer()
       }
-
-      proxy %>%
-        add_circle_layer(
-          id = "stations_layer_tiled",
-          source = "stations_tiled_source",
-          source_layer = stations_tiles_source_layer,
-          circle_color = "#3498db",
-          circle_radius = interpolate(
-            property = "zoom",
-            values = c(2, 6, 10),
-            stops = c(2.5, 4.5, 8)
-          ),
-          circle_opacity = 0.8,
-          circle_stroke_width = 1.5,
-          circle_stroke_color = "black",
-          tooltip = get_column("popup_content"),
-          before_id = isolate(stations_before_id())
-        )
-
+      # Only apply filter if inputs are initialized (not during initial onFlushed render).
+      # At startup, show all stations (no filter = show all).
+      if (isTRUE(isolate(map_ready_to_filter()))) {
+        apply_pmtiles_filter()
+      }
       session$sendCustomMessage("hide-map-overlay", list())
       return(invisible(NULL))
     }
 
+    # GeoJSON fallback
+    proxy <- clear_station_layers(maplibre_proxy("map"))
     map_data <- build_map_source_data(data)
     if (!is.null(map_data) && nrow(map_data) > 0) {
       map_tooltip <- if ("popup_content" %in% names(map_data)) get_column("popup_content") else NULL
@@ -507,6 +681,7 @@ function(input, output, session) {
   })
 
   session$onFlushed(function() {
+    tryCatch({
     session$sendCustomMessage("freezeUI", list(text = "Pinging GeoNetwork API..."))
     api_total    <- check_api_total_records()
     current_data <- isolate(inventory_data_rv())
@@ -549,6 +724,18 @@ function(input, output, session) {
           write_inventory_cache(new_data),
           error = function(e) message("Cache write failed: ", e$message)
         )
+
+        # Regenerate PMTiles from updated parquet cache
+        session$sendCustomMessage("updateFreezeMsg", list(text = "Building vector tiles..."))
+        pmtiles_ok <- tryCatch(
+          build_pmtiles(),
+          error = function(e) { message("PMTiles build failed: ", e$message); FALSE }
+        )
+        if (isTRUE(pmtiles_ok)) {
+          stations_render_mode <<- "pmtiles"
+          stations_pmtiles_url <<- "stations.pmtiles"
+        }
+
         inventory_data_rv(new_data)
         inventory_data <<- new_data
         refresh_filter_controls(new_data)
@@ -583,9 +770,18 @@ function(input, output, session) {
       session$sendCustomMessage("unfreezeUI", list())
       later::later(function() { map_ready_to_filter(TRUE) }, delay = 1.0)
     }
+    }, error = function(e) {
+      message("=== onFlushed ERROR ===")
+      message("Error message: ", e$message)
+      message("Error call: ", deparse(e$call))
+      message(traceback())
+      session$sendCustomMessage("unfreezeUI", list())
+    })
   }, once = TRUE)
 
   # Render Map — only for filter-triggered re-renders (NOT initial load)
+  # When using PMTiles, filter changes are applied via set_filter() (instant, GPU-side)
+  # so we don't need the freezeUI overlay.
   observeEvent(list(filtered_stations(), style_change_trigger()), {
     req(map_ready_to_filter())
     if (isTRUE(startup_input_sync_pending())) {
@@ -598,12 +794,25 @@ function(input, output, session) {
         return()
       }
     }
-    
-    session$sendCustomMessage("freezeUI", list(text = "Filtering data..."))
-    data <- filtered_stations()
-    session$sendCustomMessage("updateFreezeMsg", list(text = "Rendering on map..."))
-    render_stations_to_map(data)
-    session$sendCustomMessage("unfreezeUI", list())
+
+    use_tiled <- stations_render_mode %in% c("pmtiles", "mvt")
+
+    if (use_tiled && isTRUE(pmtiles_layer_added())) {
+      # Fast path: just update the filter expression on the existing layer
+      apply_pmtiles_filter()
+    } else if (use_tiled) {
+      # PMTiles available but layer not yet on map (e.g. after style switch)
+      session$sendCustomMessage("freezeUI", list(text = "Rendering on map..."))
+      render_stations_to_map(filtered_stations())
+      session$sendCustomMessage("unfreezeUI", list())
+    } else {
+      # GeoJSON fallback
+      session$sendCustomMessage("freezeUI", list(text = "Filtering data..."))
+      data <- filtered_stations()
+      session$sendCustomMessage("updateFreezeMsg", list(text = "Rendering on map..."))
+      render_stations_to_map(data)
+      session$sendCustomMessage("unfreezeUI", list())
+    }
   }, ignoreInit = TRUE)
 
 

@@ -20,11 +20,15 @@ if (!requireNamespace("arrow", quietly = TRUE)) {
 }
 source("funs/plots.R")
 source("funs/api_utils.R")
+source("funs/build_pmtiles.R")
 
-stations_pmtiles_url <- if (file.exists(file.path("www", "stations.pmtiles"))) "stations.pmtiles" else ""
+stations_pmtiles_path <- file.path("www", "stations.pmtiles")
 stations_mvt_tiles <- character(0)
 stations_tiles_source_layer <- "stations"
 inventory_cache_parquet_path <- file.path("data", "api_inventory_cache.parquet")
+
+stations_pmtiles_url <- if (file.exists(stations_pmtiles_path)) "session_dynamic" else ""
+
 stations_render_mode <- if (stations_pmtiles_url != "") {
   "pmtiles"
 } else if (length(stations_mvt_tiles) > 0) {

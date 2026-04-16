@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y \
     libgeos-dev \
     libproj-dev \
     libsqlite3-dev \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+# Install tippecanoe (Python version) for PMTiles generation
+RUN pip3 install tippecanoe || pip3 install --break-system-packages tippecanoe
 # Install required R packages used by the app.
 # Rocker images already configure a Linux binary-friendly default CRAN mirror,
 # so avoid overriding repos here or installs may fall back to slower source builds.
